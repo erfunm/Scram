@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme for dark mode -->
+    <style name="Base.Theme.ScreenCaptureApp" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Primary colors -->
+        <item name="colorPrimary">@color/scram_purple</item>
+        <item name="colorOnPrimary">@color/white</item>
+
+        <!-- Dark mode background colors -->
+        <item name="android:colorBackground">#FF121212</item>
+        <item name="colorSurface">#FF1E1E1E</item>
+        <item name="colorOnBackground">@color/white</item>
+        <item name="colorOnSurface">@color/white</item>
+
+        <!-- Status bar for dark mode -->
+        <item name="android:statusBarColor">#FF121212</item>
+        <item name="android:windowLightStatusBar">false</item>
+
+        <!-- Navigation bar for dark mode -->
+        <item name="android:navigationBarColor">#FF121212</item>
+        <item name="android:windowLightNavigationBar">false</item>
+
+        <!-- Error colors -->
+        <item name="colorError">@color/scram_danger</item>
+        <item name="colorOnError">@color/white</item>
+    </style>
+</resources>

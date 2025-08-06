@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme with minimal design colors -->
+    <style name="Base.Theme.ScreenCaptureApp" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Primary colors -->
+        <item name="colorPrimary">@color/scram_purple</item>
+        <item name="colorOnPrimary">@color/white</item>
+
+        <!-- Background colors -->
+        <item name="android:colorBackground">@color/scram_background</item>
+        <item name="colorSurface">@color/white</item>
+        <item name="colorOnBackground">@color/scram_text_primary</item>
+        <item name="colorOnSurface">@color/scram_text_primary</item>
+
+        <!-- Status bar - keep it light -->
+        <item name="android:statusBarColor">@color/scram_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+
+        <!-- Navigation bar -->
+        <item name="android:navigationBarColor">@color/scram_background</item>
+        <item name="android:windowLightNavigationBar">true</item>
+
+        <!-- Error colors -->
+        <item name="colorError">@color/scram_danger</item>
+        <item name="colorOnError">@color/white</item>
+    </style>
+
+    <style name="Theme.ScreenCaptureApp" parent="Base.Theme.ScreenCaptureApp" />
+</resources>

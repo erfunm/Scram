@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Scram</string>
+    <string name="app_slogan">Spot the scam</string>
+    <string name="protection_active">Protection Active</string>
+    <string name="protection_inactive">Protection Inactive</string>
+    <string name="tap_to_enable">Tap to enable scam detection</string>
+    <string name="tap_to_disable">Tap to disable scam detection</string>
+    <string name="ai_model_loading">AI model loading...</string>
+    <string name="ai_model_ready">AI model ready</string>
+    <string name="screenshots_analyzed">Screenshots will be analyzed for scams</string>
+    <string name="real_time_protection">Real-time scam protection</string>
+</resources>
