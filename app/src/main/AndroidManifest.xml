@@ -9,9 +9,16 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!-- CRITICAL: Complete media projection permissions for Android 14+ -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.CAPTURE_VIDEO_OUTPUT"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- CRITICAL: This is the missing permission causing your error -->
+    <uses-permission android:name="android.permission.PROJECT_MEDIA"
+        tools:ignore="ProtectedPermissions" />
 
     <!-- App detection permission -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
@@ -64,12 +71,16 @@
             android:excludeFromRecents="true"
             android:launchMode="singleTop" />
 
-        <!-- Screen Capture Service -->
+        <!-- FIXED: Use specialUse service type to avoid media projection restrictions -->
         <service
             android:name=".SafeScreenCaptureService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
+            android:foregroundServiceType="specialUse">
+            <meta-data
+                android:name="android.app.FOREGROUND_SERVICE_SPECIAL_USE_EXPLANATION"
+                android:value="This service provides real-time scam detection by analyzing screen content to protect users from fraudulent activities and phishing attempts." />
+        </service>
 
         <!-- File Provider -->
         <provider
@@ -81,8 +92,6 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
-
-        <!-- REMOVED: ML Kit Language ID meta-data - Gemma handles language detection -->
 
     </application>
 

@@ -107,20 +107,11 @@ class MainActivity : ComponentActivity() {
         try {
             Log.d(TAG, "MainActivity onCreate started")
 
-            // CRITICAL: Clean shutdown of any existing service first
-            try {
-                val serviceIntent = Intent(this, SafeScreenCaptureService::class.java).apply {
-                    action = "com.example.screencaptureapp.STOP_SERVICE"
-                }
-                startService(serviceIntent)
-                Log.d(TAG, "Stopped any existing service to ensure clean inactive state")
-            } catch (e: Exception) {
-                Log.w(TAG, "No existing service to stop: ${e.message}")
-            }
-
-            // Clear service state preferences
+            // FIXED: DO NOT start/stop any service during onCreate
+            // Just ensure clean state in preferences
             val prefs = getSharedPreferences("service_state", MODE_PRIVATE)
             prefs.edit().putBoolean("is_running", false).apply()
+            Log.d(TAG, "✅ Ensured clean inactive state in preferences")
 
             // ADDED: Register broadcast receiver for service state changes
             val filter = IntentFilter(SafeScreenCaptureService.ACTION_SERVICE_STATE_CHANGED)
@@ -155,7 +146,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            Log.d(TAG, "MainActivity onCreate completed - Service state: INACTIVE")
+            Log.d(TAG, "MainActivity onCreate completed - Service state: INACTIVE (no auto-start)")
 
         } catch (e: Exception) {
             Log.e(TAG, "Error in onCreate", e)
@@ -594,8 +585,10 @@ class MainActivity : ComponentActivity() {
                 addLogMessage("AI model loaded successfully ✓")
                 delay(300)
 
-                // Start the service
+                // FIXED: Start the service without auto-triggering stop action
+                addLogMessage("Starting background service...")
                 val serviceIntent = Intent(this@MainActivity, SafeScreenCaptureService::class.java)
+                // DO NOT SET ACTION - this was causing the stop action to trigger
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     startForegroundService(serviceIntent)
@@ -603,7 +596,6 @@ class MainActivity : ComponentActivity() {
                     startService(serviceIntent)
                 }
 
-                addLogMessage("Starting background service...")
                 delay(500)
 
                 // Update service state in preferences
@@ -698,7 +690,10 @@ class MainActivity : ComponentActivity() {
                 addLogMessage("AI model ready ✓")
                 delay(300)
 
+                // FIXED: Start service without action
                 val serviceIntent = Intent(this@MainActivity, SafeScreenCaptureService::class.java)
+                // DO NOT SET ACTION
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     startForegroundService(serviceIntent)
                 } else {

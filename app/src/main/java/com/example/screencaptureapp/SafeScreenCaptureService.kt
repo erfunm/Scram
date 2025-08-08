@@ -196,10 +196,30 @@ class SafeScreenCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "📥 onStartCommand: action='${intent?.action}'")
 
-        startForeground(NOTIFICATION_ID, createNotification())
-
+        // FIXED: Only start foreground if not a stop action
         when (intent?.action) {
+            ACTION_STOP_SERVICE, "com.example.screencaptureapp.STOP_SERVICE" -> {
+                Log.d(TAG, "🛑 Stop service requested via notification")
+
+                // FIXED: Update shared preferences to reflect stopped state
+                val prefs = getSharedPreferences("service_state", MODE_PRIVATE)
+                prefs.edit().putBoolean("is_running", false).apply()
+                Log.d(TAG, "✅ Updated shared preferences: is_running=false")
+
+                // ADDED: Broadcast service stopping to MainActivity
+                broadcastServiceState(false)
+
+                serviceScope.cancel()
+                cleanupScreenshotResources()
+                updateNotificationWithMessage("Stopping...")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
             "SETUP_PERSISTENT_PROJECTION" -> {
+                // Start foreground first for this action
+                startForeground(NOTIFICATION_ID, createNotification())
+
                 val permissionData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra("mediaProjectionData", Intent::class.java)
                 } else {
@@ -216,25 +236,18 @@ class SafeScreenCaptureService : Service() {
                 }
             }
 
-            ACTION_STOP_SERVICE, "com.example.screencaptureapp.STOP_SERVICE" -> {
-                Log.d(TAG, "🛑 Stop service requested via notification")
-
-                // FIXED: Update shared preferences to reflect stopped state
-                val prefs = getSharedPreferences("service_state", MODE_PRIVATE)
-                prefs.edit().putBoolean("is_running", false).apply()
-                Log.d(TAG, "✅ Updated shared preferences: is_running=false")
-
-                // ADDED: Broadcast service stopping to MainActivity
-                broadcastServiceState(false)
-
-                serviceScope.cancel()
-                cleanupScreenshotResources()
-                updateNotificationWithMessage("Stopping...")
-                stopSelf()
-            }
-
             else -> {
-                Log.d(TAG, "🏁 Service started")
+                // FIXED: Normal service start - start foreground immediately
+                try {
+                    startForeground(NOTIFICATION_ID, createNotification())
+                    Log.d(TAG, "✅ Service started in foreground successfully")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Failed to start foreground service", e)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+
+                Log.d(TAG, "🏁 Service started normally")
                 if (isModelInitialized) {
                     updateNotificationWithMessage("Ready - Tap Scan to check for scams")
                 } else {
