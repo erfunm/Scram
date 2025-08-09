@@ -2,29 +2,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Screen capture permissions -->
+    <!-- Your existing permissions... -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-
-    <!-- CRITICAL: Complete media projection permissions for Android 14+ -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.CAPTURE_VIDEO_OUTPUT"
         tools:ignore="ProtectedPermissions" />
-
-    <!-- CRITICAL: This is the missing permission causing your error -->
-    <uses-permission android:name="android.permission.PROJECT_MEDIA"
-        tools:ignore="ProtectedPermissions" />
-
-    <!-- App detection permission -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
-
-    <!-- NOTIFICATION PERMISSIONS -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
@@ -43,18 +34,23 @@
         android:theme="@style/Theme.ScreenCaptureApp"
         tools:targetApi="31">
 
-        <!-- Main Activity -->
+        <!-- 🎯 ADD THIS - Critical ML Kit meta-data (from react-native-mlkit-ocr) -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="ocr" />
+
+        <!-- Your existing activities... -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait">
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.ScreenCaptureApp">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- Model Download Activity -->
         <activity
             android:name=".ModelDownloadActivity"
             android:exported="false"
@@ -62,7 +58,7 @@
             android:label="Downloading AI Model"
             android:screenOrientation="portrait" />
 
-        <!-- Permission Request Activity -->
+
         <activity
             android:name=".PermissionRequestActivity"
             android:exported="false"
@@ -71,18 +67,16 @@
             android:excludeFromRecents="true"
             android:launchMode="singleTop" />
 
-        <!-- FIXED: Use specialUse service type to avoid media projection restrictions -->
         <service
             android:name=".SafeScreenCaptureService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="mediaProjection|specialUse">
             <meta-data
                 android:name="android.app.FOREGROUND_SERVICE_SPECIAL_USE_EXPLANATION"
-                android:value="This service provides real-time scam detection by analyzing screen content to protect users from fraudulent activities and phishing attempts." />
+                android:value="This service provides real-time scam detection by analyzing screen content to protect users from fraudulent activities and phishing attempts. Media projection is used to capture screenshots for AI-powered content analysis." />
         </service>
 
-        <!-- File Provider -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

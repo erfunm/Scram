@@ -3,6 +3,7 @@ package com.example.screencaptureapp
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -67,11 +68,59 @@ class SafeScreenCaptureService : Service() {
         createNotificationChannel()
         ScamNotificationHelper.createScamAlertChannel(this)
 
+        // CRITICAL: Start as foreground service immediately for Android 16
+        startForegroundServiceWithMediaProjection()
+
         // FIXED: Initialize AI model with proper error handling and re-initialization
         initializeModelAsync()
 
         // ADDED: Notify MainActivity that service started
         broadcastServiceState(true)
+    }
+
+    /**
+     * FIXED: Proper foreground service initialization for Android 16 Beta
+     */
+    private fun startForegroundServiceWithMediaProjection() {
+        try {
+            val notification = createNotification()
+
+            // FIXED: Use hybrid service type for Android 16 compatibility
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+
+            Log.d(TAG, "✅ Started as foreground service with media projection type")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to start foreground service", e)
+            stopSelf()
+        }
+    }
+
+    /**
+     * ADDED: Check if service is properly running as foreground
+     */
+    private fun isRunningAsForegroundService(): Boolean {
+        return try {
+            val manager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            for (service in manager.getRunningServices(Integer.MAX_VALUE)) {
+                if (SafeScreenCaptureService::class.java.name == service.service.className) {
+                    return service.foreground
+                }
+            }
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not check foreground service status", e)
+            false
+        }
     }
 
     /**
@@ -196,7 +245,7 @@ class SafeScreenCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "📥 onStartCommand: action='${intent?.action}'")
 
-        // FIXED: Only start foreground if not a stop action
+        // FIXED: Handle different actions properly
         when (intent?.action) {
             ACTION_STOP_SERVICE, "com.example.screencaptureapp.STOP_SERVICE" -> {
                 Log.d(TAG, "🛑 Stop service requested via notification")
@@ -217,8 +266,11 @@ class SafeScreenCaptureService : Service() {
             }
 
             "SETUP_PERSISTENT_PROJECTION" -> {
-                // Start foreground first for this action
-                startForeground(NOTIFICATION_ID, createNotification())
+                // Ensure we're running as foreground service before processing
+                if (!isRunningAsForegroundService()) {
+                    Log.w(TAG, "⚠️ Not running as foreground service - restarting properly")
+                    startForegroundServiceWithMediaProjection()
+                }
 
                 val permissionData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra("mediaProjectionData", Intent::class.java)
@@ -237,14 +289,9 @@ class SafeScreenCaptureService : Service() {
             }
 
             else -> {
-                // FIXED: Normal service start - start foreground immediately
-                try {
-                    startForeground(NOTIFICATION_ID, createNotification())
-                    Log.d(TAG, "✅ Service started in foreground successfully")
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Failed to start foreground service", e)
-                    stopSelf()
-                    return START_NOT_STICKY
+                // FIXED: Ensure foreground service is properly running
+                if (!isRunningAsForegroundService()) {
+                    startForegroundServiceWithMediaProjection()
                 }
 
                 Log.d(TAG, "🏁 Service started normally")
@@ -287,6 +334,14 @@ class SafeScreenCaptureService : Service() {
         try {
             updateNotificationWithMessage("Taking screenshot...")
 
+            // FIXED: Ensure we're running as foreground service before creating MediaProjection
+            if (!isRunningAsForegroundService()) {
+                Log.e(TAG, "❌ Service not running as foreground - cannot create MediaProjection")
+                updateNotificationWithMessage("Service not properly started")
+                isProcessingScreenshot.set(false)
+                return
+            }
+
             if (mediaProjectionManager == null) {
                 Log.e(TAG, "❌ MediaProjectionManager is null")
                 updateNotificationWithMessage("Error: MediaProjectionManager unavailable")
@@ -311,6 +366,12 @@ class SafeScreenCaptureService : Service() {
             Log.d(TAG, "✅ Fresh MediaProjection created")
             performSingleScreenshot(freshMediaProjection)
 
+        } catch (e: SecurityException) {
+            Log.e(TAG, "❌ SecurityException creating MediaProjection - foreground service issue", e)
+            updateNotificationWithMessage("Permission error - restarting service...")
+            // Try to restart as foreground service
+            startForegroundServiceWithMediaProjection()
+            isProcessingScreenshot.set(false)
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error creating MediaProjection with fresh permission", e)
             updateNotificationWithMessage("Screenshot failed: ${e.message}")
@@ -470,7 +531,8 @@ class SafeScreenCaptureService : Service() {
                 return
             }
 
-            val extractedText = OCRHelper.extractTextFromBitmap(bitmapCopy)
+            // FIXED: Use extractTextFromImage with context instead of deprecated extractTextFromBitmap
+            val extractedText = OCRHelper.extractTextFromImage(this@SafeScreenCaptureService, file)
 
             if (!extractedText.isNullOrBlank()) {
                 Log.d(TAG, "📝 OCR found ${extractedText.length} characters")
@@ -650,6 +712,8 @@ class SafeScreenCaptureService : Service() {
             ).apply {
                 description = "Background service for screen capture"
                 setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
@@ -682,6 +746,7 @@ class SafeScreenCaptureService : Service() {
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "🛑 Stop", stopPendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
 
@@ -713,6 +778,7 @@ class SafeScreenCaptureService : Service() {
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "🛑 Stop", stopPendingIntent)
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .build()
 
             getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification)

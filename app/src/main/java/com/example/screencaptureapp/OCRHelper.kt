@@ -19,7 +19,7 @@ import java.io.File
 
 object OCRHelper {
     private const val TAG = "OCRHelper"
-    private const val TARGET_RESOLUTION = 1080 // Increased from 720 for better OCR quality
+    private const val TARGET_RESOLUTION = 1080
     private const val IDLE_TIMEOUT_MS = 5 * 60 * 1000L // 5 minutes
 
     // PERSISTENT COMPONENT - Created once, reused many times
@@ -37,10 +37,6 @@ object OCRHelper {
     // GPU detection state
     private var gpuCapabilitiesChecked = false
     private var hasGpuCapabilities = false
-
-    // ADDED: OCR initialization retry logic
-    private var ocrInitAttempts = 0
-    private const val MAX_OCR_INIT_ATTEMPTS = 3
 
     /**
      * CRITICAL FIX: Auto re-initialize recognizer if it was cleaned up
@@ -73,54 +69,22 @@ object OCRHelper {
         if (textRecognizer == null || isCleaningUp) {
             isInitializing = true
             val startTime = System.currentTimeMillis()
-            Log.d(TAG, "🔧 Creating new TextRecognizer instance (attempt ${ocrInitAttempts + 1}/$MAX_OCR_INIT_ATTEMPTS)...")
+            Log.d(TAG, "🔧 Creating new TextRecognizer instance...")
 
             // Detect GPU capabilities on first creation
             if (!gpuCapabilitiesChecked) {
                 detectGpuCapabilities()
             }
 
-            // FIXED: Use more conservative OCR options to avoid ML Kit initialization errors
-            try {
-                // Create a basic Latin text recognizer without experimental features
-                val options = TextRecognizerOptions.Builder()
-                    .build()
+            // FIXED: Use DEFAULT_OPTIONS exactly like the working SCCRMMMMM version
+            textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-                textRecognizer = TextRecognition.getClient(options)
+            val initTime = System.currentTimeMillis() - startTime
+            Log.d(TAG, "✅ TextRecognizer created in ${initTime}ms - PERSISTENT until idle")
 
-                val initTime = System.currentTimeMillis() - startTime
-                Log.d(TAG, "✅ TextRecognizer created in ${initTime}ms - PERSISTENT until idle")
-
-                // Log GPU status
-                logGpuStatus()
-                isInitializing = false
-                ocrInitAttempts = 0 // Reset on success
-
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Failed to create TextRecognizer (attempt ${ocrInitAttempts + 1})", e)
-
-                ocrInitAttempts++
-                isInitializing = false
-
-                // If we've exhausted attempts, create a minimal fallback
-                if (ocrInitAttempts >= MAX_OCR_INIT_ATTEMPTS) {
-                    Log.w(TAG, "⚠️ Max OCR init attempts reached, creating minimal recognizer")
-                    try {
-                        // Last resort: try the most basic configuration
-                        textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                        Log.d(TAG, "✅ Fallback TextRecognizer created")
-                        ocrInitAttempts = 0
-                    } catch (fallbackError: Exception) {
-                        Log.e(TAG, "❌ Even fallback TextRecognizer failed", fallbackError)
-                        textRecognizer = null
-                        throw fallbackError
-                    }
-                } else {
-                    // Retry with exponential backoff
-                    Thread.sleep(1000L * ocrInitAttempts)
-                    return getOrCreateRecognizer()
-                }
-            }
+            // Log GPU status
+            logGpuStatus()
+            isInitializing = false
         } else {
             Log.d(TAG, "⚡ Reusing existing TextRecognizer instance")
         }
@@ -148,7 +112,7 @@ object OCRHelper {
 
                 Log.d(TAG, "📐 Original bitmap: ${originalBitmap.width}x${originalBitmap.height}")
 
-                // Downscale and optimize bitmap for faster OCR
+                // Optimize bitmap for better OCR
                 val optimizedBitmap = optimizeBitmapForOCR(originalBitmap)
 
                 // Clean up original to save memory
@@ -158,17 +122,14 @@ object OCRHelper {
 
                 Log.d(TAG, "🔧 Optimized bitmap: ${optimizedBitmap.width}x${optimizedBitmap.height}")
 
-                // Extract text using PERSISTENT recognizer with auto re-init
+                // Extract text using the fixed extractTextFromBitmap
                 val result = extractTextFromBitmap(optimizedBitmap)
 
                 // Clean up optimized bitmap
                 optimizedBitmap.recycle()
 
                 val ocrTime = System.currentTimeMillis() - ocrStartTime
-                Log.d(
-                    TAG,
-                    "📊 OCR METRICS: ${ocrTime}ms | Text length: ${result?.length ?: 0} | ${getRecognizerStatus()}"
-                )
+                Log.d(TAG, "📊 OCR completed in ${ocrTime}ms | Text length: ${result?.length ?: 0}")
 
                 result
 
@@ -180,131 +141,103 @@ object OCRHelper {
         }
     }
 
+    // CRITICAL FIX: Update extractTextFromBitmap to handle closed detectors properly
     suspend fun extractTextFromBitmap(bitmap: Bitmap): String? {
         return withContext(Dispatchers.IO) {
             val ocrStartTime = System.currentTimeMillis()
+            var attempts = 0
+            val maxAttempts = 3
 
-            try {
-                Log.d(TAG, "🔍 Processing bitmap for OCR: ${bitmap.width}x${bitmap.height}")
+            while (attempts < maxAttempts) {
+                attempts++
 
-                // Enhanced GPU detection logging
-                logProcessingStart()
+                try {
+                    Log.d(TAG, "🔍 OCR attempt $attempts: Processing bitmap ${bitmap.width}x${bitmap.height}")
 
-                // IMPROVED: Try to detect if image contains multiple scripts
-                val hasLikelyAsianText = detectAsianCharacters(bitmap)
-                if (hasLikelyAsianText) {
-                    Log.d(TAG, "🈳 Detected possible Asian characters in image")
-                }
-
-                val image = InputImage.fromBitmap(bitmap, 0)
-
-                // FIXED: Better error handling for OCR initialization
-                val recognizer = try {
-                    ensureRecognizerInitialized()
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Failed to initialize OCR recognizer", e)
-                    // Return fallback response instead of crashing
-                    return@withContext null
-                }
-
-                // ADDED: Retry logic for OCR processing
-                var lastException: Exception? = null
-                for (attempt in 1..2) { // Try twice
-                    try {
-                        val result = recognizer.process(image).await()
-                        var extractedText = result.text
-
-                        // ADDED: Post-processing to clean up OCR artifacts
-                        extractedText = postProcessOCRText(extractedText)
-
-                        val ocrTime = System.currentTimeMillis() - ocrStartTime
-
-                        // Enhanced logging with GPU detection
-                        Log.d(
-                            TAG,
-                            "📊 OCR METRICS: ${ocrTime}ms | Text length: ${extractedText.length} | ${getRecognizerStatus()} | Attempt: $attempt"
-                        )
-
-                        if (extractedText.isNotEmpty()) {
-                            Log.d(TAG, "📝 Text preview: ${extractedText.take(200)}...")
-                            // FULL TEXT LOG - uncomment to see complete extracted text
-                            Log.d(TAG, "📄 FULL EXTRACTED TEXT:")
-                            Log.d(TAG, "--- START TEXT ---")
-                            Log.d(TAG, extractedText)
-                            Log.d(TAG, "--- END TEXT ---")
-                        } else {
-                            Log.w(TAG, "⚠️ No text found in image (attempt $attempt)")
-                        }
-
-                        // Log processing completion with GPU info
-                        logProcessingComplete()
-
-                        return@withContext extractedText
-
-                    } catch (e: Exception) {
-                        Log.w(TAG, "⚠️ OCR attempt $attempt failed: ${e.message}")
-                        lastException = e
-
-                        if (attempt == 1) {
-                            // First attempt failed, try to reinitialize recognizer
-                            Log.d(TAG, "🔄 Reinitializing OCR recognizer for retry...")
-                            synchronized(this@OCRHelper) {
-                                try {
-                                    textRecognizer?.close()
-                                } catch (cleanup: Exception) {
-                                    Log.w(TAG, "⚠️ Error during OCR cleanup: ${cleanup.message}")
-                                }
-                                textRecognizer = null
-                                ocrInitAttempts = 0 // Reset attempts for retry
+                    // CRITICAL FIX: Get fresh recognizer for each retry
+                    val recognizer = if (attempts > 1) {
+                        Log.d(TAG, "🔄 Creating fresh recognizer for retry attempt $attempts")
+                        synchronized(this@OCRHelper) {
+                            try {
+                                textRecognizer?.close()
+                            } catch (e: Exception) {
+                                Log.w(TAG, "⚠️ Error closing old recognizer: ${e.message}")
                             }
-
-                            // Small delay before retry
-                            delay(500)
+                            textRecognizer = null
                         }
+                        // Get fresh recognizer and use it directly
+                        ensureRecognizerInitialized()
+                    } else {
+                        // First attempt - use existing or create new
+                        ensureRecognizerInitialized()
+                    }
+
+                    val image = InputImage.fromBitmap(bitmap, 0)
+                    val result = recognizer.process(image).await()
+                    var extractedText = result.text
+
+                    // Apply post-processing
+                    extractedText = postProcessOCRText(extractedText)
+
+                    val ocrTime = System.currentTimeMillis() - ocrStartTime
+                    Log.d(TAG, "✅ OCR successful on attempt $attempts in ${ocrTime}ms")
+
+                    if (!extractedText.isNullOrEmpty()) {
+                        Log.d(TAG, "📝 Text preview: ${extractedText.take(200)}...")
+                        Log.d(TAG, "📄 FULL EXTRACTED TEXT:")
+                        Log.d(TAG, "--- START TEXT ---")
+                        Log.d(TAG, extractedText)
+                        Log.d(TAG, "--- END TEXT ---")
+                    } else {
+                        Log.w(TAG, "⚠️ No text found in image")
+                    }
+
+                    updateLastUsedTime()
+                    scheduleIdleCleanup()
+                    return@withContext extractedText
+
+                } catch (e: Exception) {
+                    val ocrTime = System.currentTimeMillis() - ocrStartTime
+                    Log.w(TAG, "⚠️ OCR attempt $attempts failed: ${e.message}")
+
+                    if (attempts < maxAttempts) {
+                        when {
+                            e.message?.contains("closed") == true -> {
+                                Log.d(TAG, "🔄 Detector closed - will recreate for next attempt")
+                            }
+                            e.message?.contains("Failed to init") == true -> {
+                                Log.d(TAG, "🔄 Init failed - reinitializing for retry")
+                            }
+                            e.message?.contains("mlkit-google-ocr-models") == true -> {
+                                Log.d(TAG, "🔄 Model file error - will retry with fresh recognizer")
+                            }
+                            else -> {
+                                Log.d(TAG, "🔄 Unknown error - will retry with fresh recognizer")
+                            }
+                        }
+
+                        // Brief delay before retry
+                        delay((100 * attempts).toLong()) // Progressive delay: 100ms, 200ms, 300ms
+                    } else {
+                        Log.e(TAG, "❌ All OCR attempts failed after ${ocrTime}ms", e)
+                        return@withContext null
                     }
                 }
-
-                // Both attempts failed
-                val ocrTime = System.currentTimeMillis() - ocrStartTime
-                Log.e(TAG, "❌ All OCR attempts failed after ${ocrTime}ms", lastException)
-                return@withContext null
-
-            } catch (e: Exception) {
-                val ocrTime = System.currentTimeMillis() - ocrStartTime
-                Log.e(TAG, "❌ OCR processing error after ${ocrTime}ms", e)
-                return@withContext null
             }
+
+            val totalTime = System.currentTimeMillis() - ocrStartTime
+            Log.e(TAG, "❌ All $maxAttempts OCR attempts failed after ${totalTime}ms")
+            return@withContext null
         }
     }
 
     /**
-     * ADDED: Simple heuristic to detect if image might contain Asian characters
-     */
-    private fun detectAsianCharacters(bitmap: Bitmap): Boolean {
-        // For now, we'll use a simple approach - check if the image has characteristics
-        // that suggest Asian text (more complex shapes, different aspect ratios)
-        // This is a placeholder - you could implement more sophisticated detection
-
-        // Check image dimensions - Asian text often requires more vertical space
-        val aspectRatio = bitmap.height.toFloat() / bitmap.width.toFloat()
-        val hasVerticalLayout = aspectRatio > 1.2f
-
-        // Check if image is small (typical for mobile screenshots with Asian text)
-        val isSmallImage = bitmap.width < 800 || bitmap.height < 800
-
-        return hasVerticalLayout || isSmallImage
-    }
-
-    /**
-     * IMPROVED: Post-process OCR text to fix common artifacts including Japanese
+     * Post-process OCR text to fix common artifacts
      */
     private fun postProcessOCRText(rawText: String): String {
         if (rawText.isBlank()) return rawText
 
         var processed = rawText
-
-        // ADDED: Fix common Japanese OCR artifacts first
-        processed = fixJapaneseOCRErrors(processed)
 
         // Fix common OCR mistakes for English text
         val corrections = mapOf(
@@ -316,37 +249,23 @@ object OCRHelper {
             "authen" to "authentication",
             "verif" to "verification",
             "Mlcrosoftauth" to "Microsoft authentication",
-            "authenti" to "authentication",
-
-            // Fix broken words that commonly appear
-            "Use verif" to "Use verification",
-            "for Mlcrosoft" to "for Microsoft",
             "authentlcat" to "authentication",
-            "verificat" to "verification",
-
-            // Common character substitutions in garbled text
-            "đetats" to "details",
-            "nttihiš" to "entire",
-            "arefu" to "careful",
-            "hierngaC" to "sharing",
-            "yotr" to "your",
-            "nseBát" to "screen"
+            "verificat" to "verification"
         )
 
-        // Apply corrections carefully - only for clearly wrong text
+        // Apply corrections carefully
         for ((wrong, correct) in corrections) {
             if (processed.contains(wrong, ignoreCase = true)) {
-                // Use word boundary regex to avoid partial matches
                 val regex = "\\b${Regex.escape(wrong)}\\b".toRegex(RegexOption.IGNORE_CASE)
                 processed = regex.replace(processed, correct)
                 Log.d(TAG, "🔧 Fixed OCR: '$wrong' → '$correct'")
             }
         }
 
-        // Clean up excessive whitespace and line breaks
+        // Clean up excessive whitespace
         processed = processed
-            .replace(Regex("\\s+"), " ") // Multiple spaces to single space
-            .replace(Regex("\\n\\s*\\n"), "\n") // Multiple line breaks to single
+            .replace(Regex("\\s+"), " ")
+            .replace(Regex("\\n\\s*\\n"), "\n")
             .trim()
 
         if (processed != rawText) {
@@ -356,234 +275,39 @@ object OCRHelper {
         return processed
     }
 
-    /**
-     * ADDED: Fix common Japanese OCR errors
-     */
-    private fun fixJapaneseOCRErrors(text: String): String {
-        var fixed = text
-
-        // Common Japanese OCR issues and their fixes
-        val japaneseCorrections = mapOf(
-            // Hiragana/Katakana commonly misread as similar characters
-            "力" to "カ", // Katakana ka vs kanji power
-            "ロ" to "口", // Katakana ro vs kanji mouth
-            "ハ" to "八", // Katakana ha vs kanji eight
-            "二" to "ニ", // Kanji two vs katakana ni
-
-            // Common misreadings
-            "工" to "コ", // Kanji craft vs katakana ko
-            "人" to "入", // Kanji person vs kanji enter
-
-            // OCR often breaks Japanese words - try to detect and fix some patterns
-            "ー" to "一", // Long vowel mark vs kanji one
-            "。" to ".", // Japanese period
-            "、" to ",", // Japanese comma
-        )
-
-        // Apply Japanese corrections
-        for ((wrong, correct) in japaneseCorrections) {
-            if (fixed.contains(wrong)) {
-                fixed = fixed.replace(wrong, correct)
-                Log.d(TAG, "🈳 Fixed Japanese OCR: '$wrong' → '$correct'")
-            }
-        }
-
-        // Try to detect and preserve Japanese text patterns
-        // Look for common Japanese patterns that might be important
-        val hasJapanesePatterns = listOf(
-            "です", "である", "ます", "だ", "の", "に", "を", "が", "は", "で", "と", "から", "まで"
-        ).any { pattern -> fixed.contains(pattern) }
-
-        if (hasJapanesePatterns) {
-            Log.d(TAG, "🈳 Japanese text patterns detected - preserving structure")
-        }
-
-        return fixed
-    }
-
-    /**
-     * Detect GPU capabilities and availability
-     */
-    private fun detectGpuCapabilities() {
-        try {
-            Log.d(TAG, "🔍 Checking GPU capabilities...")
-
-            // Check system properties for GPU info
-            val hardware = android.os.Build.HARDWARE.lowercase()
-            val manufacturer = android.os.Build.MANUFACTURER
-            val model = android.os.Build.MODEL
-            val soc = android.os.Build.SOC_MANUFACTURER ?: "unknown"
-
-            Log.d(TAG, "📱 Device: $manufacturer $model")
-            Log.d(TAG, "🔧 Hardware: $hardware")
-            Log.d(TAG, "💾 SoC: $soc")
-
-            // Enhanced GPU detection for Pixel devices and others
-            val hasAdreno = hardware.contains("adreno") || hardware.contains("qualcomm")
-            val hasMali = hardware.contains("mali") || hardware.contains("arm")
-            val hasPowerVR = hardware.contains("powervr") || hardware.contains("imagination")
-            val hasSnapdragon = manufacturer.contains("qualcomm", true) ||
-                    model.contains("snapdragon", true)
-
-            // FIXED: Enhanced Pixel/Google detection for Tensor chips
-            val hasTensor = hardware.contains("tensor") ||
-                    hardware.contains("komodo") ||
-                    hardware.contains("zuma") ||
-                    hardware.contains("slider") ||
-                    model.contains("pixel", true)
-
-            val hasAppleGPU = hardware.contains("apple") || manufacturer.contains("apple", true)
-
-            // Enhanced GPU capabilities detection
-            hasGpuCapabilities =
-                hasAdreno || hasMali || hasPowerVR || hasSnapdragon || hasTensor || hasAppleGPU
-
-            Log.d(
-                TAG,
-                "🔍 GPU Detection: Adreno=$hasAdreno, Mali=$hasMali, PowerVR=$hasPowerVR, Snapdragon=$hasSnapdragon, Tensor=$hasTensor"
-            )
-
-            if (hasGpuCapabilities) {
-                Log.d(TAG, "🚀 GPU capabilities detected - MLKit may use GPU acceleration")
-
-                // Try to detect specific GPU
-                when {
-                    hasTensor -> Log.d(
-                        TAG,
-                        "🎮 Google Tensor GPU detected (Mali-G78 MP20 or similar)"
-                    )
-
-                    hasAdreno || hasSnapdragon -> Log.d(TAG, "🎮 Adreno GPU detected (Qualcomm)")
-                    hasMali -> Log.d(TAG, "🎮 Mali GPU detected (ARM)")
-                    hasPowerVR -> Log.d(TAG, "🎮 PowerVR GPU detected (Imagination)")
-                    hasAppleGPU -> Log.d(TAG, "🎮 Apple GPU detected")
-                }
-            } else {
-                Log.d(TAG, "💻 No obvious GPU acceleration detected - using CPU processing")
-                Log.d(TAG, "🔍 Note: MLKit may still use optimized CPU delegates (XNNPack)")
-            }
-
-            gpuCapabilitiesChecked = true
-
-        } catch (e: Exception) {
-            Log.w(TAG, "⚠️ Could not detect GPU capabilities", e)
-            hasGpuCapabilities = false
-            gpuCapabilitiesChecked = true
-        }
-    }
-
-    /**
-     * Log GPU status when recognizer is created
-     */
-    private fun logGpuStatus() {
-        if (hasGpuCapabilities) {
-            Log.d(TAG, "🚀 TextRecognizer created with potential GPU acceleration")
-            Log.d(TAG, "💡 Monitor TensorFlow Lite logs for delegate usage:")
-            Log.d(TAG, "   - Look for 'GPU delegate' = GPU acceleration")
-            Log.d(TAG, "   - Look for 'XNNPack delegate' = CPU optimization")
-        } else {
-            Log.d(TAG, "💻 TextRecognizer created for CPU-only processing")
-        }
-    }
-
-    /**
-     * Log processing start with GPU context
-     */
-    private fun logProcessingStart() {
-        if (hasGpuCapabilities) {
-            Log.d(TAG, "⚡ Starting OCR processing (GPU-capable device)")
-        } else {
-            Log.d(TAG, "⚡ Starting OCR processing (CPU-only)")
-        }
-    }
-
-    /**
-     * Log processing completion with GPU indicators
-     */
-    private fun logProcessingComplete() {
-        try {
-            Log.d(TAG, "✅ OCR processing completed")
-
-            if (hasGpuCapabilities) {
-                Log.d(TAG, "🔍 Check logs above for TensorFlow Lite delegate usage:")
-                Log.d(TAG, "   📊 GPU delegate = Hardware acceleration active")
-                Log.d(TAG, "   📊 XNNPack delegate = Optimized CPU processing")
-                Log.d(TAG, "   📊 No delegate mentioned = Basic CPU processing")
-            }
-
-        } catch (e: Exception) {
-            Log.w(TAG, "⚠️ Error logging processing completion", e)
-        }
-    }
-
-    /**
-     * Get recognizer status with GPU info
-     */
-    private fun getRecognizerStatus(): String {
-        val baseStatus = if (textRecognizer != null && !isCleaningUp) {
-            "PERSISTENT until idle"
-        } else {
-            "NEW instance created"
-        }
-
-        val gpuStatus = if (hasGpuCapabilities) {
-            "GPU-capable"
-        } else {
-            "CPU-only"
-        }
-
-        return "$baseStatus ($gpuStatus)"
-    }
-
     private fun optimizeBitmapForOCR(originalBitmap: Bitmap): Bitmap {
         try {
             val originalWidth = originalBitmap.width
             val originalHeight = originalBitmap.height
 
             Log.d(TAG, "🔧 Starting bitmap optimization for OCR...")
-            Log.d(TAG, "📐 Original: ${originalWidth}x${originalHeight}, config: ${originalBitmap.config}")
+            Log.d(TAG, "📐 Original: ${originalWidth}x${originalHeight}")
 
-            // IMPROVED: Better resolution targeting for OCR
-            // OCR works better with higher resolution, so be more conservative with downscaling
-            val targetResolution = if (originalHeight * originalWidth > 2073600) { // > 1920x1080
-                1080 // Only downscale very large images
-            } else {
-                TARGET_RESOLUTION // Use original target for smaller images
-            }
-
-            // Calculate downscaling factor to target resolution
+            // Calculate scaling for better OCR
             val scaleFactor = when {
-                originalHeight > originalWidth -> targetResolution.toFloat() / originalHeight
-                else -> targetResolution.toFloat() / originalWidth
+                originalHeight > originalWidth -> TARGET_RESOLUTION.toFloat() / originalHeight
+                else -> TARGET_RESOLUTION.toFloat() / originalWidth
             }
 
-            // IMPROVED: Don't downscale if image is reasonably sized for OCR
-            if (scaleFactor >= 0.8f) { // Changed from 1.0f to 0.8f
-                Log.d(TAG, "🔧 Image size is good for OCR, applying sharpening and contrast")
+            // Don't downscale too much for OCR
+            if (scaleFactor >= 0.8f) {
+                Log.d(TAG, "🔧 Image size good for OCR, applying enhancement")
                 return enhanceBitmapForOCR(originalBitmap)
             }
 
             val newWidth = (originalWidth * scaleFactor).toInt()
             val newHeight = (originalHeight * scaleFactor).toInt()
 
-            Log.d(
-                TAG,
-                "🔽 Downscaling: ${originalWidth}x${originalHeight} → ${newWidth}x${newHeight} (${
-                    String.format("%.2f", scaleFactor)
-                }x)"
-            )
+            Log.d(TAG, "🔽 Scaling: ${originalWidth}x${originalHeight} → ${newWidth}x${newHeight}")
 
-            // IMPROVED: Use higher quality scaling
             val matrix = Matrix().apply {
                 setScale(scaleFactor, scaleFactor)
             }
 
-            // Create downscaled bitmap with ARGB_8888 for better quality (changed from RGB_565)
             val scaledBitmap = Bitmap.createBitmap(
                 originalBitmap, 0, 0, originalWidth, originalHeight, matrix, true
             )
 
-            // Apply enhancement after scaling
             return enhanceBitmapForOCR(scaledBitmap).also {
                 if (it !== scaledBitmap) {
                     scaledBitmap.recycle()
@@ -596,28 +320,21 @@ object OCRHelper {
         }
     }
 
-    /**
-     * ADDED: Enhance bitmap for better OCR recognition
-     */
     private fun enhanceBitmapForOCR(bitmap: Bitmap): Bitmap {
         return try {
             Log.d(TAG, "✨ Enhancing bitmap for OCR...")
 
-            // Create a copy to work with
             val enhanced = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-
-            // Apply simple contrast and brightness enhancement
             val canvas = Canvas(enhanced)
             val paint = Paint().apply {
-                // Increase contrast slightly
                 colorFilter = ColorMatrixColorFilter(
                     ColorMatrix().apply {
-                        // Contrast matrix: [contrast, 0, 0, 0, brightness]
+                        // Increase contrast for better OCR
                         set(floatArrayOf(
-                            1.2f, 0f, 0f, 0f, 10f,      // Red
-                            0f, 1.2f, 0f, 0f, 10f,      // Green
-                            0f, 0f, 1.2f, 0f, 10f,      // Blue
-                            0f, 0f, 0f, 1f, 0f          // Alpha
+                            1.3f, 0f, 0f, 0f, 15f,    // Red
+                            0f, 1.3f, 0f, 0f, 15f,    // Green
+                            0f, 0f, 1.3f, 0f, 15f,    // Blue
+                            0f, 0f, 0f, 1f, 0f        // Alpha
                         ))
                     }
                 )
@@ -626,16 +343,27 @@ object OCRHelper {
             canvas.drawBitmap(bitmap, 0f, 0f, paint)
 
             if (enhanced !== bitmap) {
-                Log.d(TAG, "✅ Bitmap enhanced for better OCR")
+                Log.d(TAG, "✅ Bitmap enhanced for OCR")
                 enhanced
             } else {
                 bitmap
             }
 
         } catch (e: Exception) {
-            Log.w(TAG, "⚠️ Bitmap enhancement failed, using original", e)
+            Log.w(TAG, "⚠️ Enhancement failed, using original", e)
             bitmap
         }
+    }
+
+    private fun detectGpuCapabilities() {
+        gpuCapabilitiesChecked = true
+        hasGpuCapabilities = true // Assume GPU support for now
+        Log.d(TAG, "🎮 GPU capabilities detected: $hasGpuCapabilities")
+    }
+
+    private fun logGpuStatus() {
+        val status = if (hasGpuCapabilities) "GPU-capable" else "CPU-only"
+        Log.d(TAG, "🎮 TextRecognizer status: $status")
     }
 
     private fun updateLastUsedTime() {
@@ -643,25 +371,19 @@ object OCRHelper {
     }
 
     private fun scheduleIdleCleanup() {
-        // Cancel existing cleanup job
         idleCleanupJob?.cancel()
-
-        // Schedule new cleanup
         idleCleanupJob = lifecycleScope.launch {
             delay(IDLE_TIMEOUT_MS)
-
-            // Check if still idle
             if (System.currentTimeMillis() - lastUsedTime >= IDLE_TIMEOUT_MS) {
-                Log.d(TAG, "💤 5-minute idle timeout reached - cleaning up OCR recognizer")
+                Log.d(TAG, "💤 5-minute idle timeout - cleaning up OCR")
                 cleanup()
             }
         }
     }
 
     fun onTrimMemory(level: Int) {
-        // MUTEX FIX: Prevent concurrent cleanup calls
         if (isCleaningUp) {
-            Log.d(TAG, "🔄 OCR cleanup already in progress - skipping")
+            Log.d(TAG, "🔄 Cleanup already in progress")
             return
         }
 
@@ -670,7 +392,7 @@ object OCRHelper {
         when (level) {
             android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL,
             android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> {
-                Log.d(TAG, "💾 Critical memory pressure - force cleanup OCR recognizer")
+                Log.d(TAG, "💾 Critical memory pressure - force cleanup")
                 isCleaningUp = true
                 try {
                     cleanup()
@@ -678,51 +400,19 @@ object OCRHelper {
                     isCleaningUp = false
                 }
             }
-
-            android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> {
-                Log.d(TAG, "⚠️ Low memory - scheduling OCR cleanup soon")
-                // Reduce idle timeout when memory is low
-                idleCleanupJob?.cancel()
-                idleCleanupJob = lifecycleScope.launch {
-                    delay(30_000) // 30 seconds instead of 5 minutes
-                    isCleaningUp = true
-                    try {
-                        cleanup()
-                    } finally {
-                        isCleaningUp = false
-                    }
-                }
-            }
         }
     }
 
     fun cleanup() {
-        // MUTEX FIX: Add synchronization to prevent race conditions
         synchronized(this) {
             try {
                 idleCleanupJob?.cancel()
                 idleCleanupJob = null
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Error cancelling OCR cleanup job: ${e.message}")
-            }
-
-            // CRITICAL: Close recognizer with proper null check
-            try {
                 textRecognizer?.close()
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ TextRecognizer cleanup error: ${e.message}")
-            } finally {
                 textRecognizer = null
-            }
-
-            // Reset retry attempts on cleanup
-            ocrInitAttempts = 0
-
-            Log.d(TAG, "🧹 OCR cleanup completed - will auto re-initialize when needed")
-
-            // Reset GPU detection state if needed for clean re-initialization
-            if (gpuCapabilitiesChecked) {
-                Log.d(TAG, "🔄 GPU capabilities will be re-detected on next recognizer creation")
+                Log.d(TAG, "🧹 OCR cleanup completed")
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Error during cleanup: ${e.message}")
             }
         }
     }

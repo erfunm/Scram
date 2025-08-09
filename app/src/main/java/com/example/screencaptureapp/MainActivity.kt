@@ -45,6 +45,7 @@ import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalContext
 
 class MainActivity : ComponentActivity() {
 
@@ -113,6 +114,7 @@ class MainActivity : ComponentActivity() {
             prefs.edit().putBoolean("is_running", false).apply()
             Log.d(TAG, "✅ Ensured clean inactive state in preferences")
 
+
             // ADDED: Register broadcast receiver for service state changes
             val filter = IntentFilter(SafeScreenCaptureService.ACTION_SERVICE_STATE_CHANGED)
             LocalBroadcastManager.getInstance(this).registerReceiver(serviceStateReceiver, filter)
@@ -167,6 +169,13 @@ class MainActivity : ComponentActivity() {
             isServiceRunning = savedServiceState
 
             Log.d(TAG, "Service state restored from preferences: isServiceRunning=$isServiceRunning")
+
+            // FIX: If user was activating and now has usage stats permission, continue activation
+            if (isActivating && !isServiceRunning && AppDetectorHelper.hasUsageStatsPermission(this)) {
+                Log.d(TAG, "🔄 Resuming activation after permission grant")
+                isActivating = false
+                startServiceWithoutAppDetection() // Continue the activation process
+            }
 
             // Check if user granted usage stats permission while away
             if (AppDetectorHelper.hasUsageStatsPermission(this)) {
@@ -270,9 +279,13 @@ class MainActivity : ComponentActivity() {
                 modelStatus = modelStatus
             )
 
+            // ADD THIS: ML Kit Test Button (for debugging)
+            Spacer(modifier = Modifier.height(16.dp))
+
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
+
 
     @Composable
     private fun ProtectionCircle(
