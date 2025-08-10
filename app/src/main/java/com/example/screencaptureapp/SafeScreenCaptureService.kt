@@ -50,6 +50,9 @@ class SafeScreenCaptureService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val isProcessingScreenshot = AtomicBoolean(false)
 
+    // FIXED: Track foreground service state
+    private var isForegroundServiceActive = false
+
     override fun onBind(intent: Intent?): IBinder? {
         return null
     }
@@ -63,33 +66,65 @@ class SafeScreenCaptureService : Service() {
         createNotificationChannel()
         ScamNotificationHelper.createScamAlertChannel(this)
 
-        startForegroundServiceWithMediaProjection()
+        // FIXED: Start with SPECIAL_USE only - upgrade to MEDIA_PROJECTION when we have permission
+        startInitialForegroundService()
         broadcastServiceState(true)
     }
 
     /**
-     * Start as foreground service
+     * FIXED: Start foreground service with SPECIAL_USE only initially
      */
-    private fun startForegroundServiceWithMediaProjection() {
+    private fun startInitialForegroundService() {
         try {
             val notification = createNotification()
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // FIXED: Start with SPECIAL_USE only - no MEDIA_PROJECTION yet
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+
+            isForegroundServiceActive = true
+            Log.d(TAG, "✅ Started as foreground service (SPECIAL_USE)")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to start initial foreground service", e)
+            stopSelf()
+        }
+    }
+
+    /**
+     * FIXED: Upgrade to MEDIA_PROJECTION type when we're about to create MediaProjection
+     */
+    private fun upgradeToMediaProjectionService() {
+        try {
+            if (!isForegroundServiceActive) {
+                Log.w(TAG, "⚠️ Cannot upgrade - foreground service not active")
+                return
+            }
+
+            val notification = createNotification()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // FIXED: Now we can use MEDIA_PROJECTION type before creating projection
                 startForeground(
                     NOTIFICATION_ID,
                     notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
                             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
+                Log.d(TAG, "✅ Upgraded to MEDIA_PROJECTION foreground service")
             }
 
-            Log.d(TAG, "✅ Started as foreground service")
-
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to start foreground service", e)
-            stopSelf()
+            Log.e(TAG, "❌ Failed to upgrade foreground service", e)
+            // This is critical - if we can't upgrade, we can't create MediaProjection
+            throw e
         }
     }
 
@@ -159,7 +194,10 @@ class SafeScreenCaptureService : Service() {
             }
 
             Log.d(TAG, "🔧 Using permission data for screenshot")
-            updateNotificationWithMessage("✅ Permission granted - taking screenshot...")
+            updateNotificationWithMessage("✅ Permission granted - upgrading service...")
+
+            // FIXED: Upgrade to MEDIA_PROJECTION type BEFORE creating MediaProjection
+            upgradeToMediaProjectionService()
 
             Handler(Looper.getMainLooper()).postDelayed({
                 performQuickScreenshotWithFreshPermission(permissionData)
@@ -200,6 +238,8 @@ class SafeScreenCaptureService : Service() {
             }
 
             Log.d(TAG, "✅ MediaProjection created")
+
+            // Service type already upgraded before creating MediaProjection
             performSingleScreenshot(freshMediaProjection)
 
         } catch (e: Exception) {
@@ -664,6 +704,7 @@ class SafeScreenCaptureService : Service() {
 
         broadcastServiceState(false)
         cleanupScreenshotResources()
+        isForegroundServiceActive = false
 
         try {
             OCRHelper.cleanup()
