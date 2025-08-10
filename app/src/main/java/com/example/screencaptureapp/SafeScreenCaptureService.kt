@@ -35,7 +35,6 @@ class SafeScreenCaptureService : Service() {
         private const val ACTION_STOP_SERVICE = "STOP_SERVICE"
         private const val TAG = "SafeScreenService"
 
-        // ADDED: Broadcast constants for MainActivity communication
         const val ACTION_SERVICE_STATE_CHANGED = "com.example.screencaptureapp.SERVICE_STATE_CHANGED"
         const val EXTRA_SERVICE_RUNNING = "service_running"
     }
@@ -51,10 +50,6 @@ class SafeScreenCaptureService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val isProcessingScreenshot = AtomicBoolean(false)
 
-    // FIXED: Model initialization state tracking
-    private var isModelInitialized = false
-    private var modelInitializationInProgress = false
-
     override fun onBind(intent: Intent?): IBinder? {
         return null
     }
@@ -68,24 +63,17 @@ class SafeScreenCaptureService : Service() {
         createNotificationChannel()
         ScamNotificationHelper.createScamAlertChannel(this)
 
-        // CRITICAL: Start as foreground service immediately for Android 16
         startForegroundServiceWithMediaProjection()
-
-        // FIXED: Initialize AI model with proper error handling and re-initialization
-        initializeModelAsync()
-
-        // ADDED: Notify MainActivity that service started
         broadcastServiceState(true)
     }
 
     /**
-     * FIXED: Proper foreground service initialization for Android 16 Beta
+     * Start as foreground service
      */
     private fun startForegroundServiceWithMediaProjection() {
         try {
             val notification = createNotification()
 
-            // FIXED: Use hybrid service type for Android 16 compatibility
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                     NOTIFICATION_ID,
@@ -97,7 +85,7 @@ class SafeScreenCaptureService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
 
-            Log.d(TAG, "✅ Started as foreground service with media projection type")
+            Log.d(TAG, "✅ Started as foreground service")
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to start foreground service", e)
@@ -106,25 +94,7 @@ class SafeScreenCaptureService : Service() {
     }
 
     /**
-     * ADDED: Check if service is properly running as foreground
-     */
-    private fun isRunningAsForegroundService(): Boolean {
-        return try {
-            val manager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            for (service in manager.getRunningServices(Integer.MAX_VALUE)) {
-                if (SafeScreenCaptureService::class.java.name == service.service.className) {
-                    return service.foreground
-                }
-            }
-            false
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not check foreground service status", e)
-            false
-        }
-    }
-
-    /**
-     * ADDED: Broadcast service state changes to MainActivity
+     * Broadcast service state to MainActivity
      */
     private fun broadcastServiceState(isRunning: Boolean) {
         try {
@@ -138,126 +108,17 @@ class SafeScreenCaptureService : Service() {
         }
     }
 
-    /**
-     * FIXED: Proper async model initialization with retry capability
-     */
-    private fun initializeModelAsync() {
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                if (modelInitializationInProgress) {
-                    Log.d(TAG, "⏳ Model initialization already in progress")
-                    return@launch
-                }
-
-                modelInitializationInProgress = true
-
-                withContext(Dispatchers.Main) {
-                    updateNotificationWithMessage("Initializing AI model...")
-                }
-
-                Log.d(TAG, "🔧 Starting model initialization...")
-
-                val initialized = ScamDetectionModelHelper.initialize(this@SafeScreenCaptureService)
-
-                withContext(Dispatchers.Main) {
-                    if (initialized) {
-                        Log.d(TAG, "✅ Model initialized successfully")
-                        isModelInitialized = true
-                        updateNotificationWithMessage("Ready - Tap Scan to check for scams")
-                    } else {
-                        Log.e(TAG, "❌ Model initialization failed")
-                        isModelInitialized = false
-                        updateNotificationWithMessage("AI model failed to load - tap to retry")
-                    }
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Model initialization error", e)
-                withContext(Dispatchers.Main) {
-                    isModelInitialized = false
-                    updateNotificationWithMessage("Model initialization error - tap to retry")
-                }
-            } finally {
-                modelInitializationInProgress = false
-            }
-        }
-    }
-
-    /**
-     * FIXED: Ensure model is ready before processing, with auto re-initialization
-     */
-    private suspend fun ensureModelReady(): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                // If model is already initialized, just verify it's working
-                if (isModelInitialized) {
-                    Log.d(TAG, "✅ Model already initialized")
-                    return@withContext true
-                }
-
-                // If initialization is in progress, wait for it
-                if (modelInitializationInProgress) {
-                    Log.d(TAG, "⏳ Waiting for model initialization to complete...")
-                    var waitTime = 0
-                    while (modelInitializationInProgress && waitTime < 30000) { // 30 second timeout
-                        delay(500)
-                        waitTime += 500
-                    }
-                    return@withContext isModelInitialized
-                }
-
-                // Model not initialized, try to initialize it
-                Log.d(TAG, "🔄 Model not ready - attempting initialization...")
-
-                withContext(Dispatchers.Main) {
-                    updateNotificationWithMessage("Preparing AI model...")
-                }
-
-                val initialized = ScamDetectionModelHelper.initialize(this@SafeScreenCaptureService)
-
-                if (initialized) {
-                    Log.d(TAG, "✅ Model successfully initialized on-demand")
-                    isModelInitialized = true
-                    withContext(Dispatchers.Main) {
-                        updateNotificationWithMessage("AI model ready - processing...")
-                    }
-                    return@withContext true
-                } else {
-                    Log.e(TAG, "❌ Failed to initialize model on-demand")
-                    isModelInitialized = false
-                    withContext(Dispatchers.Main) {
-                        updateNotificationWithMessage("AI model initialization failed")
-                    }
-                    return@withContext false
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error ensuring model readiness", e)
-                isModelInitialized = false
-                withContext(Dispatchers.Main) {
-                    updateNotificationWithMessage("Model initialization error")
-                }
-                return@withContext false
-            }
-        }
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "📥 onStartCommand: action='${intent?.action}'")
 
-        // FIXED: Handle different actions properly
         when (intent?.action) {
             ACTION_STOP_SERVICE, "com.example.screencaptureapp.STOP_SERVICE" -> {
-                Log.d(TAG, "🛑 Stop service requested via notification")
+                Log.d(TAG, "🛑 Stop service requested")
 
-                // FIXED: Update shared preferences to reflect stopped state
                 val prefs = getSharedPreferences("service_state", MODE_PRIVATE)
                 prefs.edit().putBoolean("is_running", false).apply()
-                Log.d(TAG, "✅ Updated shared preferences: is_running=false")
 
-                // ADDED: Broadcast service stopping to MainActivity
                 broadcastServiceState(false)
-
                 serviceScope.cancel()
                 cleanupScreenshotResources()
                 updateNotificationWithMessage("Stopping...")
@@ -266,12 +127,6 @@ class SafeScreenCaptureService : Service() {
             }
 
             "SETUP_PERSISTENT_PROJECTION" -> {
-                // Ensure we're running as foreground service before processing
-                if (!isRunningAsForegroundService()) {
-                    Log.w(TAG, "⚠️ Not running as foreground service - restarting properly")
-                    startForegroundServiceWithMediaProjection()
-                }
-
                 val permissionData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra("mediaProjectionData", Intent::class.java)
                 } else {
@@ -284,22 +139,12 @@ class SafeScreenCaptureService : Service() {
                 } else {
                     Log.e(TAG, "❌ No permission data received")
                     updateNotificationWithMessage("Permission setup failed")
-                    isProcessingScreenshot.set(false)
                 }
             }
 
             else -> {
-                // FIXED: Ensure foreground service is properly running
-                if (!isRunningAsForegroundService()) {
-                    startForegroundServiceWithMediaProjection()
-                }
-
                 Log.d(TAG, "🏁 Service started normally")
-                if (isModelInitialized) {
-                    updateNotificationWithMessage("Ready - Tap Scan to check for scams")
-                } else {
-                    updateNotificationWithMessage("Initializing AI model...")
-                }
+                updateNotificationWithMessage("Ready - Tap Scan to check for scams")
             }
         }
 
@@ -313,34 +158,25 @@ class SafeScreenCaptureService : Service() {
                 return
             }
 
-            Log.d(TAG, "🔧 Using fresh permission data for screenshot")
-            updateNotificationWithMessage("✅ Permission granted - preparing screenshot...")
+            Log.d(TAG, "🔧 Using permission data for screenshot")
+            updateNotificationWithMessage("✅ Permission granted - taking screenshot...")
 
-            // ADDED: Debounce delay to let system UI dismiss
             Handler(Looper.getMainLooper()).postDelayed({
                 performQuickScreenshotWithFreshPermission(permissionData)
-            }, 500) // 500ms delay to let permission dialog disappear
+            }, 500)
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error using fresh permission data", e)
+            Log.e(TAG, "❌ Error using permission data", e)
             updateNotificationWithMessage("Setup error: ${e.message}")
             isProcessingScreenshot.set(false)
         }
     }
 
     private fun performQuickScreenshotWithFreshPermission(permissionData: Intent) {
-        Log.d(TAG, "📸 Creating MediaProjection with fresh permission (after UI delay)")
+        Log.d(TAG, "📸 Creating MediaProjection with fresh permission")
 
         try {
             updateNotificationWithMessage("Taking screenshot...")
-
-            // FIXED: Ensure we're running as foreground service before creating MediaProjection
-            if (!isRunningAsForegroundService()) {
-                Log.e(TAG, "❌ Service not running as foreground - cannot create MediaProjection")
-                updateNotificationWithMessage("Service not properly started")
-                isProcessingScreenshot.set(false)
-                return
-            }
 
             if (mediaProjectionManager == null) {
                 Log.e(TAG, "❌ MediaProjectionManager is null")
@@ -357,23 +193,17 @@ class SafeScreenCaptureService : Service() {
             )
 
             if (freshMediaProjection == null) {
-                Log.e(TAG, "❌ Failed to create fresh MediaProjection")
+                Log.e(TAG, "❌ Failed to create MediaProjection")
                 updateNotificationWithMessage("Failed to create screen projection")
                 isProcessingScreenshot.set(false)
                 return
             }
 
-            Log.d(TAG, "✅ Fresh MediaProjection created")
+            Log.d(TAG, "✅ MediaProjection created")
             performSingleScreenshot(freshMediaProjection)
 
-        } catch (e: SecurityException) {
-            Log.e(TAG, "❌ SecurityException creating MediaProjection - foreground service issue", e)
-            updateNotificationWithMessage("Permission error - restarting service...")
-            // Try to restart as foreground service
-            startForegroundServiceWithMediaProjection()
-            isProcessingScreenshot.set(false)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error creating MediaProjection with fresh permission", e)
+            Log.e(TAG, "❌ Error creating MediaProjection", e)
             updateNotificationWithMessage("Screenshot failed: ${e.message}")
             cleanupScreenshotResources()
             isProcessingScreenshot.set(false)
@@ -381,7 +211,7 @@ class SafeScreenCaptureService : Service() {
     }
 
     private fun performSingleScreenshot(mediaProjection: MediaProjection) {
-        Log.d(TAG, "📸 Setting up single screenshot capture")
+        Log.d(TAG, "📸 Setting up screenshot capture")
 
         try {
             mediaProjection.registerCallback(object : MediaProjection.Callback() {
@@ -406,7 +236,7 @@ class SafeScreenCaptureService : Service() {
                 currentImageReader?.surface, null, null
             )
 
-            Log.d(TAG, "⚡ Screenshot setup completed successfully")
+            Log.d(TAG, "⚡ Screenshot setup completed")
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error in screenshot setup", e)
@@ -425,19 +255,18 @@ class SafeScreenCaptureService : Service() {
 
     private fun setupImageListener(mediaProjection: MediaProjection) {
         val imageProcessed = AtomicBoolean(false)
-        var frameCount = 0 // ADDED: Frame counter to skip initial frames
+        var frameCount = 0
 
         currentImageReader?.setOnImageAvailableListener({ reader ->
             frameCount++
 
-            // OPTION A: Skip first 2-3 frames to avoid permission dialog
+            // Skip first 2 frames to avoid permission dialog
             if (frameCount <= 2) {
-                Log.d(TAG, "⏭️ Skipping frame $frameCount (letting UI settle)")
+                Log.d(TAG, "⏭️ Skipping frame $frameCount")
                 try {
-                    // Consume and discard the frame
                     reader.acquireLatestImage()?.close()
                 } catch (e: Exception) {
-                    Log.w(TAG, "⚠️ Error discarding frame $frameCount", e)
+                    Log.w(TAG, "⚠️ Error discarding frame", e)
                 }
                 return@setOnImageAvailableListener
             }
@@ -446,7 +275,7 @@ class SafeScreenCaptureService : Service() {
                 return@setOnImageAvailableListener
             }
 
-            Log.d(TAG, "📷 Processing screenshot image (frame $frameCount)")
+            Log.d(TAG, "📷 Processing screenshot (frame $frameCount)")
 
             var image: Image? = null
             var bitmap: Bitmap? = null
@@ -458,7 +287,7 @@ class SafeScreenCaptureService : Service() {
                     val file = saveBitmapOptimized(bitmap)
 
                     if (file != null) {
-                        Log.d(TAG, "✅ Screenshot saved (frame $frameCount)")
+                        Log.d(TAG, "✅ Screenshot saved")
 
                         val bitmapCopy = bitmap.copy(bitmap.config, false)
 
@@ -503,9 +332,9 @@ class SafeScreenCaptureService : Service() {
 
                 try {
                     mediaProjection.stop()
-                    Log.d(TAG, "✅ Fresh MediaProjection stopped after single use (frame $frameCount)")
+                    Log.d(TAG, "✅ MediaProjection stopped after single use")
                 } catch (e: Exception) {
-                    Log.w(TAG, "⚠️ Error stopping fresh MediaProjection", e)
+                    Log.w(TAG, "⚠️ Error stopping MediaProjection", e)
                 }
 
                 cleanupScreenshotResources()
@@ -515,15 +344,46 @@ class SafeScreenCaptureService : Service() {
         }, Handler(Looper.getMainLooper()))
     }
 
+    /**
+     * SIMPLIFIED: Just check if model is ready - no initialization
+     */
+    private suspend fun ensureModelReady(): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Just check if model is ready (should be loaded by MainActivity)
+                if (ScamDetectionModelHelper.isModelReady()) {
+                    Log.d(TAG, "✅ Model is ready in GPU - proceeding with analysis")
+                    withContext(Dispatchers.Main) {
+                        updateNotificationWithMessage("AI model ready - processing...")
+                    }
+                    return@withContext true
+                } else {
+                    Log.w(TAG, "⚠️ Model not loaded - user should restart service")
+                    withContext(Dispatchers.Main) {
+                        updateNotificationWithMessage("Model not loaded - restart service")
+                    }
+                    return@withContext false
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error checking model readiness", e)
+                withContext(Dispatchers.Main) {
+                    updateNotificationWithMessage("Model check error")
+                }
+                return@withContext false
+            }
+        }
+    }
+
     private suspend fun processScreenshotAsync(file: File, bitmapCopy: Bitmap) {
         Log.d(TAG, "🔍 Starting scam analysis...")
 
         try {
-            // FIXED: Ensure model is ready before processing
+            // Check if model is ready (should be loaded already)
             if (!ensureModelReady()) {
-                Log.e(TAG, "❌ Model not ready for analysis")
+                Log.e(TAG, "❌ Model not ready")
                 withContext(Dispatchers.Main) {
-                    updateNotificationWithMessage("❌ AI model not ready - initialization failed")
+                    updateNotificationWithMessage("❌ AI model not loaded")
                     Handler(Looper.getMainLooper()).postDelayed({
                         restoreReadyState()
                     }, 3000)
@@ -531,39 +391,34 @@ class SafeScreenCaptureService : Service() {
                 return
             }
 
-            // FIXED: Use extractTextFromImage with context instead of deprecated extractTextFromBitmap
+            // Extract text from image
             val extractedText = OCRHelper.extractTextFromImage(this@SafeScreenCaptureService, file)
 
             if (!extractedText.isNullOrBlank()) {
                 Log.d(TAG, "📝 OCR found ${extractedText.length} characters")
 
-                // FIXED: Proper text cleaning pipeline
+                // Clean extracted text
                 val cleanedText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP &&
                     AppDetectorHelper.hasUsageStatsPermission(this@SafeScreenCaptureService)) {
 
-                    // Get current app package name
                     val currentAppPackage = AppDetectorHelper.getCurrentApp(this@SafeScreenCaptureService)
-
                     Log.d(TAG, "📱 Current app: $currentAppPackage")
 
-                    // FIXED: Always apply basic cleaning first, then app-specific if needed
                     val basicCleaned = TextFilterHelper.cleanExtractedText(extractedText)
 
                     if (currentAppPackage != null) {
-                        // Apply app-specific cleaning with package name
                         TextFilterHelper.applyAppSpecificCleaning(basicCleaned, currentAppPackage)
                     } else {
                         basicCleaned
                     }
                 } else {
-                    // No app detection permission - just use basic cleaning
                     Log.d(TAG, "📱 No app detection permission - using basic cleaning")
                     TextFilterHelper.cleanExtractedText(extractedText)
                 }
 
-                // Check if the cleaned text is worth analyzing
+                // Check if text is worth analyzing
                 if (!TextFilterHelper.isTextWorthAnalyzing(cleanedText)) {
-                    Log.d(TAG, "⚠️ Cleaned text is not worth analyzing (too short or system UI only)")
+                    Log.d(TAG, "⚠️ Text not worth analyzing")
                     withContext(Dispatchers.Main) {
                         updateNotificationWithMessage("📷 No meaningful content found")
                         Handler(Looper.getMainLooper()).postDelayed({
@@ -574,33 +429,15 @@ class SafeScreenCaptureService : Service() {
                 }
 
                 Log.d(TAG, "✨ Using cleaned text for analysis (${cleanedText.length} chars)")
-                Log.d(TAG, "🧹 Cleaned text: $cleanedText")
 
-                // FIXED: Use cleaned text for analysis instead of raw OCR text
-                val scamResult = try {
-                    ScamDetectionModelHelper.analyzeTextForScamWithContext(this@SafeScreenCaptureService, cleanedText)
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Model analysis failed, attempting re-initialization", e)
+                // Analyze with GPU-loaded model (should be instant)
+                val scamResult = ScamDetectionModelHelper.analyzeTextForScamWithContext(
+                    this@SafeScreenCaptureService,
+                    cleanedText
+                )
 
-                    // Mark model as not initialized and try again
-                    isModelInitialized = false
+                Log.d(TAG, "🔍 Analysis result: isScam=${scamResult.isScam}, confidence=${scamResult.confidence}")
 
-                    if (ensureModelReady()) {
-                        Log.d(TAG, "🔄 Model re-initialized, retrying analysis...")
-                        ScamDetectionModelHelper.analyzeTextForScamWithContext(this@SafeScreenCaptureService, cleanedText)
-                    } else {
-                        Log.e(TAG, "❌ Model re-initialization failed")
-                        ScamResult(
-                            isScam = false,
-                            confidence = 0f,
-                            explanation = "Model re-initialization failed"
-                        )
-                    }
-                }
-
-                Log.d(TAG, "🔍 Scam analysis: isScam=${scamResult.isScam}, confidence=${scamResult.confidence}")
-
-                // Log app context if available
                 scamResult.appContext?.let { appName ->
                     Log.d(TAG, "📱 Analyzed content from: $appName (${scamResult.appCategory})")
                 }
@@ -650,11 +487,7 @@ class SafeScreenCaptureService : Service() {
     }
 
     private fun restoreReadyState() {
-        if (isModelInitialized) {
-            updateNotificationWithMessage("Ready - Tap Scan to check for scams")
-        } else {
-            updateNotificationWithMessage("AI model not ready - tap to retry initialization")
-        }
+        updateNotificationWithMessage("Ready - Tap Scan to check for scams")
     }
 
     private fun cleanupScreenshotResources() {
@@ -740,7 +573,7 @@ class SafeScreenCaptureService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("🛡️ Scram Protection Active")
-            .setContentText("Tap Scan to check for scams")
+            .setContentText("Ready - Tap Scan to check for scams")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .addAction(android.R.drawable.ic_menu_camera, "\uD83D\uDD0D Scan", quickShotPendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "🛑 Stop", stopPendingIntent)
@@ -829,14 +662,10 @@ class SafeScreenCaptureService : Service() {
         super.onDestroy()
         Log.d(TAG, "🔄 Service destroying...")
 
-        // ADDED: Broadcast service stopping to MainActivity when service is destroyed
         broadcastServiceState(false)
-
         cleanupScreenshotResources()
 
         try {
-            // FIXED: Cleanup with proper method names
-            ScamDetectionModelHelper.cleanUp()
             OCRHelper.cleanup()
         } catch (e: Exception) {
             Log.w(TAG, "⚠️ Cleanup error", e)

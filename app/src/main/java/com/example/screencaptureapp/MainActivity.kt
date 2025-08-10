@@ -545,14 +545,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startScreenCaptureService() {
-        // Start activation process in coroutine to show progress
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
         scope.launch {
             try {
                 addLogMessage("Checking AI model...")
                 delay(500)
 
-                // Check model again before starting service
                 if (!ModelDownloader.isModelDownloaded(this@MainActivity)) {
                     addLogMessage("AI model not found - starting download...")
                     Toast.makeText(this@MainActivity, "Please download the AI model first", Toast.LENGTH_LONG).show()
@@ -564,7 +562,6 @@ class MainActivity : ComponentActivity() {
                 addLogMessage("AI model verified ✓")
                 delay(300)
 
-                // Check for usage stats permission
                 if (!AppDetectorHelper.hasUsageStatsPermission(this@MainActivity)) {
                     addLogMessage("Requesting enhanced protection permissions...")
                     showUsageStatsPermissionDialog()
@@ -574,34 +571,29 @@ class MainActivity : ComponentActivity() {
                 addLogMessage("Permissions verified ✓")
                 delay(300)
 
-                addLogMessage("Initializing scam detection engine...")
-                delay(500)
+                // CRITICAL FIX: Load model into GPU memory NOW (during activation)
+                addLogMessage("Loading AI model into GPU memory...")
 
-                // FIXED: Pre-initialize the model helper to avoid startup delays
-                addLogMessage("Loading AI model into memory...")
-
-                // Initialize model in background before starting service
-                val modelInitialized = try {
+                val modelLoaded = try {
                     ScamDetectionModelHelper.initialize(this@MainActivity)
                 } catch (e: Exception) {
                     Log.e(TAG, "Model initialization failed", e)
                     false
                 }
 
-                if (!modelInitialized) {
-                    addLogMessage("ERROR: AI model initialization failed")
-                    Toast.makeText(this@MainActivity, "AI model initialization failed", Toast.LENGTH_LONG).show()
+                if (!modelLoaded) {
+                    addLogMessage("ERROR: Failed to load AI model into GPU")
+                    Toast.makeText(this@MainActivity, "AI model loading failed", Toast.LENGTH_LONG).show()
                     isActivating = false
                     return@launch
                 }
 
-                addLogMessage("AI model loaded successfully ✓")
+                addLogMessage("AI model loaded into GPU ✓")
                 delay(300)
 
-                // FIXED: Start the service without auto-triggering stop action
+                // Now start the service (model is already in GPU memory)
                 addLogMessage("Starting background service...")
                 val serviceIntent = Intent(this@MainActivity, SafeScreenCaptureService::class.java)
-                // DO NOT SET ACTION - this was causing the stop action to trigger
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     startForegroundService(serviceIntent)
@@ -611,7 +603,6 @@ class MainActivity : ComponentActivity() {
 
                 delay(500)
 
-                // Update service state in preferences
                 val prefs = getSharedPreferences("service_state", MODE_PRIVATE)
                 prefs.edit().putBoolean("is_running", true).apply()
 
@@ -621,11 +612,10 @@ class MainActivity : ComponentActivity() {
                 addLogMessage("Scram protection is now active!")
                 delay(500)
 
-                // Update UI state
                 isServiceRunning = true
                 isActivating = false
 
-                Toast.makeText(this@MainActivity, "🛡️ Scram protection enabled\nContext-aware scam detection active!", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "🛡️ AI model loaded - Ready for instant scam detection!", Toast.LENGTH_LONG).show()
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting service", e)
@@ -742,16 +732,18 @@ class MainActivity : ComponentActivity() {
             }
             startService(serviceIntent)
 
-            // Update service state in preferences
+            // CRITICAL FIX: Clean up GPU model when stopping
+            ScamDetectionModelHelper.cleanUp()
+            Log.d(TAG, "🧹 AI model cleaned from GPU memory")
+
             val prefs = getSharedPreferences("service_state", MODE_PRIVATE)
             prefs.edit().putBoolean("is_running", false).apply()
             isServiceRunning = false
 
-            // Clear logs when stopping
             initializationLogs = listOf()
 
-            Log.d(TAG, "🛑 Scram protection service stop requested")
-            Toast.makeText(this, "🔒 Scram protection disabled", Toast.LENGTH_SHORT).show()
+            Log.d(TAG, "🛑 Scram protection service stopped and AI model unloaded")
+            Toast.makeText(this, "🔒 Scram protection disabled - AI model unloaded", Toast.LENGTH_SHORT).show()
 
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping service", e)
